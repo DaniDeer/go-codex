@@ -3448,44 +3448,47 @@ func (c *Client) Attach(t ClientTransport) error {
 //
 //	client := rest.NewClient()
 //	_ = client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL}))
-//	respAny, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
-//	resp := respAny.(GetUserResp)
+//	resp, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
 //
 // opts is variadic (0 or 1 value) — additive, backward-compatible with
 // every existing 3-arg call site.
 //
-// route may ALSO be an already-registered *[RouteHandle] (obtained via
-// [Route.RegisterHandle], not [Route.Register] — which discards the
-// handle) instead of a raw [Route]. Passing the handle makes any
-// [Server.AddGlobalSecurity]-declared requirement visible to credential
-// resolution, in addition to per-route Security; a raw Route only ever
-// sees per-route Security (docs/design/
+// route may be either a bare [Route][Req,Resp] or an already-registered
+// *[RouteHandle][Req,Resp] (obtained via [Route.RegisterHandle], not
+// [Route.Register] — which discards the handle) — both satisfy
+// [callRouteArg][Req,Resp], so Req/Resp are inferred from route/req with
+// no explicit type argument needed (Go 1.27 generic methods). Passing
+// the handle makes any [Server.AddGlobalSecurity]-declared requirement
+// visible to credential resolution, in addition to per-route Security; a
+// raw Route only ever sees per-route Security (docs/design/
 // d-0001-rest-middleware-workflow-simplification.md's Addendum 6):
 //
 //	handle, _ := getUserRoute.RegisterHandle(server) // server declared AddGlobalSecurity
-//	respAny, err := client.Call(ctx, handle, GetUserReq{ID: "f47ac10b"}) // GlobalSecurity now visible
-func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
+//	resp, err := client.Call(ctx, handle, GetUserReq{ID: "f47ac10b"}) // GlobalSecurity now visible
+func (c *Client) Call[Req, Resp any](ctx context.Context, route callRouteArg[Req, Resp], req Req, opts ...ClientCallOptions) (Resp, error) {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
 	if t == nil {
-		return nil, NoClientTransportAttachedError{}
+		var zero Resp
+		return zero, NoClientTransportAttachedError{}
 	}
 	// Auto-populate the redirect-target registry (docs/features/
 	// rest-redirects.md's "Client-side route registry") — best-
 	// effort, never blocks/errors this call; see registerAutoFromCall's
 	// own doc comment.
 	c.registerAutoFromCall(route)
-	return t.Call(ctx, route, req, opts...)
+	respAny, err := t.Call(ctx, route, req, opts...)
+	resp, _ := respAny.(Resp)
+	return resp, err
 }
 
 // Consume starts consuming sseRoute with req, via c's attached
-// [ClientTransport] — the SSE-stream mirror of [Client.Call]: fn
-// (dynamic type func(context.Context, Event) error) is called for each
-// decoded event; Consume BLOCKS until ctx is cancelled or a fatal setup
-// error occurs (mirrors [events.Client.Subscribe]'s identical blocking
-// contract). Returns [NoClientTransportAttachedError] if [Client.Attach]
-// was never called.
+// [ClientTransport] — the SSE-stream mirror of [Client.Call]: fn is
+// called for each decoded event; Consume BLOCKS until ctx is cancelled or
+// a fatal setup error occurs (mirrors [events.Client.Subscribe]'s
+// identical blocking contract). Returns [NoClientTransportAttachedError]
+// if [Client.Attach] was never called.
 //
 //	client := rest.NewClient()
 //	_ = client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL}))
@@ -3494,12 +3497,14 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 //
 // opts is variadic (0 or 1 value) — additive.
 //
-// sseRoute may ALSO be an already-registered *[SSERouteHandle] (obtained
-// via [SSERoute.RegisterHandle]) instead of a raw [SSERoute] — same
-// GlobalSecurity-visibility contract as [Client.Call]'s dual-mode
-// acceptance (docs/design/d-0001-rest-middleware-workflow-simplification.md's
-// Addendum 6).
-func (c *Client) Consume(ctx context.Context, sseRoute any, req any, fn any, opts ...ClientConsumeOptions) error {
+// sseRoute may be either a bare [SSERoute][Req,Event] or an
+// already-registered *[SSERouteHandle][Req,Event] (obtained via
+// [SSERoute.RegisterHandle]) — both satisfy [sseRouteArg][Req,Event], so
+// Req/Event are inferred from sseRoute/req/fn with no explicit type
+// argument needed (Go 1.27 generic methods). Same GlobalSecurity-
+// visibility contract as [Client.Call]'s dual-mode acceptance (docs/
+// design/d-0001-rest-middleware-workflow-simplification.md's Addendum 6).
+func (c *Client) Consume[Req, Event any](ctx context.Context, sseRoute sseRouteArg[Req, Event], req Req, fn func(context.Context, Event) error, opts ...ClientConsumeOptions) error {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
@@ -3901,6 +3906,30 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 	}
 	return h, nil
 }
+
+// callRouteArg is an additive, phantom marker interface satisfied by both
+// [Route][Req,Resp] (a bare, unregistered route) and *[RouteHandle]
+// [Req,Resp] (an already-registered handle) — the two shapes
+// [Client.Call] dual-accepts at runtime, resolved today via
+// [recoverRegistryEntry]'s pure reflection (pkgPath + type-name-prefix
+// matching, unchanged by this interface). Its only purpose is giving
+// Client.Call's generic-method type-parameter inference a concrete
+// argument type to unify Req/Resp against — isRestRoute's body is
+// intentionally empty (a no-op); only the method's SIGNATURE, which
+// mentions both Req and Resp, matters for inference (Go 1.27 generic
+// methods — see go127-generic-methods roadmap). Mirrors
+// [api/reqreply]'s identically-shaped callRouteArg.
+type callRouteArg[Req, Resp any] interface {
+	isRestRoute(Req, Resp)
+}
+
+// isRestRoute implements [callRouteArg], letting a bare [Route][Req,Resp]
+// be passed directly to [Client.Call].
+func (Route[Req, Resp]) isRestRoute(Req, Resp) {}
+
+// isRestRoute implements [callRouteArg], letting an already-registered
+// *[RouteHandle][Req,Resp] be passed directly to [Client.Call].
+func (*RouteHandle[Req, Resp]) isRestRoute(Req, Resp) {}
 
 // ClientHandle returns a [RouteHandle] for client-side use without registering
 // with a [Server]. No path codec validation and no spec registration occur.
@@ -4966,6 +4995,23 @@ func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Ev
 	b.mu.Unlock()
 	return h, nil
 }
+
+// sseRouteArg is the SSE-side mirror of [callRouteArg] — satisfied by both
+// [SSERoute][Req,Event] (a bare, unregistered route) and
+// *[SSERouteHandle][Req,Event] (an already-registered handle), the two
+// shapes [Client.Consume] dual-accepts. See [callRouteArg]'s doc comment
+// for the shared rationale.
+type sseRouteArg[Req, Event any] interface {
+	isRestSSERoute(Req, Event)
+}
+
+// isRestSSERoute implements [sseRouteArg], letting a bare
+// [SSERoute][Req,Event] be passed directly to [Client.Consume].
+func (SSERoute[Req, Event]) isRestSSERoute(Req, Event) {}
+
+// isRestSSERoute implements [sseRouteArg], letting an already-registered
+// *[SSERouteHandle][Req,Event] be passed directly to [Client.Consume].
+func (*SSERouteHandle[Req, Event]) isRestSSERoute(Req, Event) {}
 
 // OpenAPISpec builds a complete OpenAPI 3.1 document from all registered routes.
 // Returns an error if any non-empty SchemaName references a schema that will not

@@ -73,11 +73,10 @@ func demoGlobalSecurityDualModeCall(ctx context.Context, built *mqtt5server.Buil
 	}
 	credentialedRoute := routes.GlobalOnlyComputeRoute.
 		Use(auth.BearerAuthMw.WithSend(globalSecurityCredFn))
-	respAny, err := credentialedClient.Call(ctx, credentialedRoute.ClientHandle(reqreply.WithRouter(computeRouter)), req)
+	resp, err := credentialedClient.Call(ctx, credentialedRoute.ClientHandle(reqreply.WithRouter(computeRouter)), req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.ComputeResp)
 	fmt.Printf("  ✓ compute(%d + %d) = %d (GlobalSecurity satisfied via credential)\n", req.X, req.Y, resp.Sum)
 }

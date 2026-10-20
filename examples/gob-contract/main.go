@@ -180,12 +180,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "attach rest client:", err)
 		os.Exit(1)
 	}
-	respAny, err := client.Call(context.Background(), contract.OrderRoute, order)
+	resp, err := client.Call(context.Background(), contract.OrderRoute, order)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "call:", err)
 		os.Exit(1)
 	}
-	resp := respAny.(contract.Order)
 	fmt.Printf("  [client] received: %+v\n", resp)
 	fmt.Println("  (request AND response both traveled as Gob bytes — Client.Call resolved contract.OrderRoute's declared format with zero manual encode/decode)")
 	fmt.Println()

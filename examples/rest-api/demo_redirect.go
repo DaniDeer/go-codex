@@ -48,15 +48,10 @@ func demoRedirect(chiClient, nethttpClient *rest.Client, chiBaseURL, nethttpBase
 
 	fmt.Println("=== POST /users-redirect-demo — primary workflow: Client.Call auto-follows the 303 (registry populated at Build() construction time) ===")
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(ctx, restapiclient.CreateUserRedirectRouteAsAlice,
+		u, err := cl.c.Call(ctx, restapiclient.CreateUserRedirectRouteAsAlice,
 			routes.CreateUserReq{Name: "Redirected Dave", Email: "redirected-dave@example.com"})
 		if err != nil {
 			fmt.Printf("  [%s] error: %v\n", cl.label, err)
-			continue
-		}
-		u, ok := respAny.(routes.User)
-		if !ok {
-			fmt.Printf("  [%s] unexpected response type %T\n", cl.label, respAny)
 			continue
 		}
 		fmt.Printf("  [%s] auto-followed to GetUserRoute's own response: id=%s name=%s\n", cl.label, u.ID, u.Name)

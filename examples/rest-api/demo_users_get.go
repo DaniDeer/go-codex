@@ -33,11 +33,11 @@ func demoGetUser(chiClient, nethttpClient *rest.Client, getUserHandle *rest.Rout
 	fmt.Println("=== GET /users/{id} — profile scope, path auto-derived from GetUserReq.ID ===")
 	id := uuid.MustParse("f47ac10b-58cc-4372-a567-0e02b2c3d479")
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(ctx, restapiclient.GetUserRouteAsAlice, routes.GetUserReq{ID: id})
+		resp, err := cl.c.Call(ctx, restapiclient.GetUserRouteAsAlice, routes.GetUserReq{ID: id})
 		if err != nil {
 			fmt.Printf("  [%s] error: %v\n", cl.label, err)
 		} else {
-			fmt.Printf("  [%s] user: %+v\n", cl.label, respAny.(routes.User))
+			fmt.Printf("  [%s] user: %+v\n", cl.label, resp)
 		}
 	}
 	fmt.Println()

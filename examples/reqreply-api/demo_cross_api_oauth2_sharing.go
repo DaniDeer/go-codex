@@ -70,12 +70,11 @@ func demoCrossAPIOAuth2Sharing(ctx context.Context, zeromqBuilt *zeromqserver.Bu
 	fmt.Printf("  ✓ rejected: %v\n", err)
 
 	fmt.Println("\n  → zeromq reqreply call WITH a valid OAuth2 token:")
-	respAny, err := zClient.Call(ctx, oauthHandle, routes.OAuthComputeReq{X: 3, Y: 4, Token: "valid-compute-write-token"})
+	resp, err := zClient.Call(ctx, oauthHandle, routes.OAuthComputeReq{X: 3, Y: 4, Token: "valid-compute-write-token"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.OAuthComputeResp)
 	fmt.Printf("  ✓ compute(3 + 4) = %d (oauth2 compute:write scope granted)\n", resp.Sum)
 
 	// ── REST side: auth.OAuthMwREST, same SCHEME config, declare + register only ──

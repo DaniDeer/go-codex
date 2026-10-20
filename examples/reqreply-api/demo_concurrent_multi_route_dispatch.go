@@ -43,12 +43,11 @@ func demoConcurrentMultiRouteDispatch(ctx context.Context, zeromqClient *reqrepl
 		wg.Add(1)
 		go func(i int, c call) {
 			defer wg.Done()
-			respAny, err := zeromqClient.Call(ctx, c.handle, c.req)
+			resp, err := zeromqClient.Call(ctx, c.handle, c.req)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "call error (%s): %v\n", c.name, err)
 				os.Exit(1)
 			}
-			resp := respAny.(routes.ComputeResp)
 			results[i] = fmt.Sprintf("  %s(%d, %d) = %d", c.name, c.req.X, c.req.Y, resp.Sum)
 		}(i, c)
 	}

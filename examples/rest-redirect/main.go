@@ -154,13 +154,9 @@ func run() error {
 		return fmt.Errorf("RegisterRoute: %w", err)
 	}
 
-	respAny, err := client.Call(context.Background(), createOrderRoute, CreateOrderReq{Item: "Widget"})
+	created, err := client.Call(context.Background(), createOrderRoute, CreateOrderReq{Item: "Widget"})
 	if err != nil {
 		return fmt.Errorf("Call(createOrderRoute): %w", err)
-	}
-	created, ok := respAny.(Order)
-	if !ok {
-		return fmt.Errorf("want Order (getOrderRoute's type), got %T", respAny)
 	}
 	fmt.Printf("created+redirected: order %s (%s)\n", created.ID, created.Item)
 

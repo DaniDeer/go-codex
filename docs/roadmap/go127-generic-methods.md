@@ -1,10 +1,37 @@
 # Go 1.27 Generic Methods — retrofitting `any`-typed/free-function workarounds
 
-> **Status: Tier 1 AND Workstream A (Tier 2's `api/file` half) BOTH
-> IMPLEMENTED and SHIPPED.** Workstream B (`events`/`reqreply`/`rest`
-> Client dispatch — caller-facing-only win, confirmed lower value, see
-> the Tier 2 review below) remains explicitly **deferred to a separate
-> future round** — not attempted.
+> **Status: Tier 1, Workstream A (Tier 2's `api/file` half), AND
+> Workstream B (Tier 2's `events`/`reqreply`/`rest` half) ALL
+> IMPLEMENTED and SHIPPED.** The entire `go127-generic-methods` roadmap
+> is now complete — see "Workstream B — SHIPPED" below for the final
+> per-method signatures and verification.
+>
+> **Workstream B shipped**: `events.Client.Publish`/`.Subscribe`,
+> `reqreply.Client.Call`/`.CallAsync`, `rest.Client.Call`/`.Consume` all
+> converted off `any`-typed parameters, using an additive phantom
+> marker-interface pattern (`publishArg[T]`/`subscribeArg[T]` in
+> `api/events`, `callRouteArg[Req,Resp]` in `api/reqreply`/`api/rest`,
+> plus a separate `sseRouteArg[Req,Event]` in `api/rest`) so that each
+> method's existing dual-accept call shape (bare role builder OR
+> pre-built handle) resolves every type parameter by inference with
+> ZERO explicit type arguments at any real call site — confirmed via a
+> real `go1.27.2` compile check BEFORE implementation and validated by
+> every one of the ~90 real call sites fixed during the round, none of
+> which needed an explicit type argument. A key mid-round correction:
+> the original review's claim that `events.Client.Publish`/`.Subscribe`
+> have "no dual-accept" was WRONG — real adapter code
+> (`adapters/{mqtt,mqtt5,zeromq}/transport.go`'s `recoverHandle`)
+> confirmed they DO dual-accept a bare `Publisher[T]`/`Subscriber[T]`
+> OR an already-built `*ChannelHandle[T]`, exactly like
+> reqreply/rest — the marker-interface pattern handles both uniformly.
+> `TransportTypeMismatchError` stays alive permanently (adapter-side
+> reflection dispatch is unchanged — interface methods can never become
+> generic), as predicted by the Tier 2 review; several `_test.go` files
+> that exercised this error by calling `Client.Publish`/`.Call`/
+> `.Consume` with an intentionally wrong-shaped argument were rewritten
+> to call the adapter's own `Transport`/`ClientTransport` interface
+> directly instead (the only layer where that mismatch can still occur
+> post-retrofit).
 >
 > **Workstream A shipped**: all 14 `api/file.Client` dispatch methods
 > converted off `any`-typed parameters. 4 genuinely needed a real Go
@@ -1149,7 +1176,74 @@ P]` type arguments at every `Patch` call site).
 `.github/instructions/go-codex.instructions.md` updated for the full
 `api/file.Client` dispatch-method signature table.
 
-**Workstream B (`events`/`reqreply`/`rest`) remains fully deferred** —
-confirmed lower value per the Tier 2 review (caller-facing-only win,
-`TransportTypeMismatchError` stays alive permanently, zero internal
-dispatch simplification) — not attempted this round.
+## Workstream B (`events`/`reqreply`/`rest`'s Tier 2 half) — SHIPPED
+
+Following the Round 6 review (applying Workstream A's real-implementation
+learnings), Workstream B was implemented and shipped in full:
+
+| Method | New marker interface | New signature |
+|---|---|---|
+| `events.Client.Publish` | `publishArg[T] interface { isPublishArg(T) }`, implemented by `Publisher[T]` and `*ChannelHandle[T]` | `func (c *Client) Publish[T any](ctx context.Context, pub publishArg[T], msg T, opts ...ClientPublishOptions) error` |
+| `events.Client.Subscribe` | `subscribeArg[T] interface { isSubscribeArg(T) }`, implemented by `Subscriber[T]` and `*ChannelHandle[T]` | `func (c *Client) Subscribe[T any](ctx context.Context, sub subscribeArg[T], fn func(context.Context, T) error, opts ...ClientSubscribeOptions) error` |
+| `reqreply.Client.Call` | `callRouteArg[Req, Resp] interface { isReqreplyRoute(Req, Resp) }`, implemented by `Route[Req,Resp]` and `*RouteHandle[Req,Resp]` | `func (c *Client) Call[Req, Resp any](ctx context.Context, route callRouteArg[Req, Resp], req Req, opts ...ClientCallOptions) (Resp, error)` |
+| `reqreply.Client.CallAsync` | same `callRouteArg[Req, Resp]` | `func (c *Client) CallAsync[Req, Resp any](ctx context.Context, route callRouteArg[Req, Resp], req Req, opts ...ClientCallOptions) (*Future[Resp], error)` |
+| `rest.Client.Call` | `callRouteArg[Req, Resp] interface { isRestRoute(Req, Resp) }`, implemented by `Route[Req,Resp]` and `*RouteHandle[Req,Resp]` | `func (c *Client) Call[Req, Resp any](ctx context.Context, route callRouteArg[Req, Resp], req Req, opts ...ClientCallOptions) (Resp, error)` |
+| `rest.Client.Consume` | `sseRouteArg[Req, Event] interface { isRestSSERoute(Req, Event) }`, implemented by `SSERoute[Req,Event]` and `*SSERouteHandle[Req,Event]` | `func (c *Client) Consume[Req, Event any](ctx context.Context, sseRoute sseRouteArg[Req, Event], req Req, fn func(context.Context, Event) error, opts ...ClientConsumeOptions) error` |
+
+**Internal dispatch is unchanged, as the Tier 2 review predicted**: each
+adapter's own reflection-based type recovery (`recoverHandle` in
+`adapters/{mqtt,mqtt5,zeromq}`, `recoverRegistryEntry` in
+`api/reqreply`/`api/rest`, both pkgPath + type-name-prefix string
+matching) stays exactly as-is — the marker interfaces are purely
+additive, compile-time-only scaffolding that gives Go's generic-method
+inference a concrete type to unify against; they play no role in the
+adapters' own runtime dispatch. `reqreply.Client.Call`/`CallAsync` keep
+their internal `any`-typed round trip through `ClientTransport.Call`
+and `followForward`'s chain-following loop unchanged, type-asserting the
+final `any` result into `Resp` once, at the boundary.
+`TransportTypeMismatchError` stays alive permanently (confirmed, not
+just predicted) — every raise site that used to be reachable from
+`Client.Publish`/`Client.Call`/`Client.Consume` directly is now
+unreachable (a wrong-shaped argument fails to compile instead), but
+every adapter's own `Transport`/`ClientTransport` interface method
+remains genuinely `any`-typed (interface methods can never become
+generic — the permanent restriction this whole roadmap is built around)
+and is still exercised directly by several rewritten `_test.go` cases.
+
+**Real-code correction found during implementation** (not just a
+review-time prediction): `events.Client.Publish`/`.Subscribe` DO
+dual-accept a bare role builder (`Publisher[T]`/`Subscriber[T]`) OR an
+already-built `*ChannelHandle[T]` — confirmed via
+`adapters/{mqtt,mqtt5,zeromq}/transport.go`'s `recoverHandle` helper,
+which explicitly handles both shapes. The Round 6 review's claim that
+events has "no dual-accept, simplest case" was wrong; it still ended up
+being the simplest conversion (one shared `ChannelHandle[T]` type
+implements both `publishArg[T]` and `subscribeArg[T]`), just not for the
+reason originally stated. A real `go1.27.2` scratch compile (value
+receiver `Publisher[T]` + pointer receiver `*ChannelHandle[T]`, both
+implementing the same marker interface) confirmed zero-explicit-type-arg
+inference works for both shapes before any production code was touched.
+
+**Blast radius actually fixed this round** (~90 real call sites, not
+estimated): `api/events`, `api/reqreply`, `api/rest` core signatures;
+marker interfaces added to `Route`/`RouteHandle`/`SSERoute`/
+`SSERouteHandle` (`api/rest/builder.go`, `api/reqreply/route.go`) and to
+`Publisher`/`Subscriber`/`ChannelHandle` (`api/events/builder.go`);
+~13 `examples/reqreply-api/*.go` files; ~10 `examples/rest-api/*.go`
+files; `examples/{adapters-nethttp-client,gob-contract,
+http-trace-span-propagation,rest-redirect}`;
+`examples/go-edge-models/app/registry/internal/registryclient.go`; test
+files in `api/events`, `api/reqreply`, `adapters/{mqtt,mqtt5,zeromq,
+nethttp}` (removing now-impossible `any`-typed wrong-type assertions,
+redirecting a handful of `TransportTypeMismatchError` regression tests
+to call the adapter's `Transport`/`ClientTransport` interface directly).
+
+**Post-implementation verification** (whole repo): `go build ./...` ✅,
+`go vet ./...` ✅, `go test ./...` ✅ (all packages `ok`; one
+`TestConsume_Formats_TypeMismatch_ReturnsCallFormatOptError` flake in
+`adapters/nethttp` reproduced as pre-existing/timing-based, unrelated to
+this change — passes reliably in isolation and in repeated full-package
+reruns), `just check` ✅ (staticcheck + gosec: 0 issues; gofmt: clean),
+`just examples` ✅ (full example sweep, all exit 0).
+`.github/instructions/go-codex.instructions.md` updated for every new
+marker interface and converted signature.

@@ -51,12 +51,11 @@ func demoBoundMiddlewareSplit(ctx context.Context, obs *observer.DemoObserver, m
 		ClientMW(nil, reqreply.Observability[routes.OAuthComputeReq, routes.OAuthComputeResp](obs)).
 		ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
 
-	respAny, err := mqtt5Client.Call(ctx, stackedHandle, routes.OAuthComputeReq{X: 11, Y: 12, Token: "valid-compute-write-token"})
+	resp, err := mqtt5Client.Call(ctx, stackedHandle, routes.OAuthComputeReq{X: 11, Y: 12, Token: "valid-compute-write-token"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.OAuthComputeResp)
 	fmt.Printf("  ✓ compute(11 + 12) = %d (bearerAuth property credential + oauth2Compute in-payload credential + observer, all composed)\n", resp.Sum)
 
 	fmt.Println("  → same route, WRONG oauth2 token (expect rejection from the BOUND half):")

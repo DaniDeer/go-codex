@@ -117,27 +117,33 @@ func TestAttach_ClientPublish_HonorsDeclaredCapabilities(t *testing.T) {
 	}
 }
 
-func TestAttach_ClientPublish_WrongPubType_ReturnsTransportTypeMismatchError(t *testing.T) {
+// TestTransport_Publish_WrongPubType/WrongMsgType_ReturnsTransportTypeMismatchError
+// call [NewTransport]'s [events.Transport] interface directly rather than
+// going through [events.Client.Publish] — since Go 1.27's generic-method
+// retrofit (go127-generic-methods), Client.Publish's pub/msg params are
+// statically typed ([publishArg][T]/T), so passing a wrong-shaped pub or a
+// wrong-typed msg to Client.Publish itself is now a COMPILE error, not a
+// runtime [events.TransportTypeMismatchError] — that mismatch can only still
+// occur at the one layer that remains genuinely `any`-typed: the adapter's
+// own [events.Transport] implementation (reached today via Client.Publish,
+// but also directly reachable, e.g. by [events.PublishHandle]/other
+// reflection-based callers) — exercised here directly to keep this adapter's
+// own reflection dispatch covered.
+func TestTransport_Publish_WrongPubType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
-	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := c.Attach(NewTransport(TransportOptions{Client: client})); err != nil {
-		t.Fatalf("Attach: %v", err)
-	}
-	err := c.Publish(context.Background(), "not-a-publisher", sensorReading{})
+	transport := NewTransport(TransportOptions{Client: client})
+	err := transport.Publish(context.Background(), "not-a-publisher", sensorReading{})
 	var mismatchErr events.TransportTypeMismatchError
 	if !errors.As(err, &mismatchErr) {
 		t.Fatalf("want TransportTypeMismatchError, got %v (%T)", err, err)
 	}
 }
 
-func TestAttach_ClientPublish_WrongMsgType_ReturnsTransportTypeMismatchError(t *testing.T) {
+func TestTransport_Publish_WrongMsgType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
-	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := c.Attach(NewTransport(TransportOptions{Client: client})); err != nil {
-		t.Fatalf("Attach: %v", err)
-	}
+	transport := NewTransport(TransportOptions{Client: client})
 	pub := plainSensorChannel("sensors/readings").WithPublish(events.Publish{})
-	err := c.Publish(context.Background(), pub, "wrong-type")
+	err := transport.Publish(context.Background(), pub, "wrong-type")
 	var mismatchErr events.TransportTypeMismatchError
 	if !errors.As(err, &mismatchErr) {
 		t.Fatalf("want TransportTypeMismatchError, got %v (%T)", err, err)
@@ -255,13 +261,14 @@ func TestAttach_ClientSubscribe_RegistersSpecIntoRealClient(t *testing.T) {
 	}
 }
 
-func TestAttach_ClientSubscribe_WrongSubType_ReturnsTransportTypeMismatchError(t *testing.T) {
+// TestTransport_Subscribe_WrongSubType_ReturnsTransportTypeMismatchError calls
+// [NewTransport]'s [events.Transport] interface directly — see
+// TestTransport_Publish_WrongPubType_ReturnsTransportTypeMismatchError's doc
+// comment for why Client.Subscribe itself can no longer exercise this path.
+func TestTransport_Subscribe_WrongSubType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
-	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := c.Attach(NewTransport(TransportOptions{Client: client})); err != nil {
-		t.Fatalf("Attach: %v", err)
-	}
-	err := c.Subscribe(context.Background(), "not-a-subscriber", func() {})
+	transport := NewTransport(TransportOptions{Client: client})
+	err := transport.Subscribe(context.Background(), "not-a-subscriber", func() {})
 	var mismatchErr events.TransportTypeMismatchError
 	if !errors.As(err, &mismatchErr) {
 		t.Fatalf("want TransportTypeMismatchError, got %v (%T)", err, err)

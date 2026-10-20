@@ -77,12 +77,11 @@ func demoRouteLevelSecurityCredentialError(ctx context.Context, built *mqtt5serv
 
 	fmt.Println("\n  → call with a valid bearer token:")
 	validHandle := routes.SecuredComputeRoute.Use(auth.BearerAuthMw.WithSend(validBearerCredFn)).ClientHandle(reqreply.WithRouter(computeRouter))
-	respAny, err := client.Call(ctx, validHandle, routes.ComputeReq{X: 7, Y: 8})
+	resp, err := client.Call(ctx, validHandle, routes.ComputeReq{X: 7, Y: 8})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.ComputeResp)
 	fmt.Printf("  ✓ compute(7 + 8) = %d (credential accepted)\n", resp.Sum)
 
 	fmt.Println("\n  → call with a malformed (empty) bearer token:")

@@ -2444,6 +2444,44 @@ func (p Publisher[T]) Handle(client *Client, opts ...HandleOpt) (*ChannelHandle[
 	return h, nil
 }
 
+// publishArg is an additive, phantom marker interface satisfied by both
+// [Publisher][T] (a bare, not-yet-built role builder) and *[ChannelHandle][T]
+// (an already-built handle) — the two shapes [Client.Publish] dual-accepts
+// at runtime (via [recoverHandle]-style reflection inside each adapter's
+// [Transport] implementation, unchanged by this interface). Its only
+// purpose is giving [Client.Publish]'s generic-method type-parameter
+// inference a concrete argument type to unify T against; isPublishArg's
+// body is intentionally empty (a no-op) — only the method's SIGNATURE,
+// which mentions T, matters for inference. Go 1.27 generic methods:
+// mirrors [api/reqreply]'s callRouteArg / [api/rest]'s callRouteArg design.
+type publishArg[T any] interface {
+	isPublishArg(T)
+}
+
+// isPublishArg implements [publishArg], letting a bare [Publisher][T] be
+// passed directly to [Client.Publish].
+func (Publisher[T]) isPublishArg(T) {}
+
+// isPublishArg implements [publishArg], letting an already-built
+// *[ChannelHandle][T] be passed directly to [Client.Publish].
+func (*ChannelHandle[T]) isPublishArg(T) {}
+
+// subscribeArg is the subscribe-side mirror of [publishArg] — satisfied by
+// both [Subscriber][T] and *[ChannelHandle][T], the two shapes
+// [Client.Subscribe] dual-accepts. See [publishArg]'s doc comment for the
+// shared rationale.
+type subscribeArg[T any] interface {
+	isSubscribeArg(T)
+}
+
+// isSubscribeArg implements [subscribeArg], letting a bare [Subscriber][T]
+// be passed directly to [Client.Subscribe].
+func (Subscriber[T]) isSubscribeArg(T) {}
+
+// isSubscribeArg implements [subscribeArg], letting an already-built
+// *[ChannelHandle][T] be passed directly to [Client.Subscribe].
+func (*ChannelHandle[T]) isSubscribeArg(T) {}
+
 // specDedupEntry records the first-registered descriptor-level info for one
 // topic in [Client.specByTopic] — used by [Subscriber.Handle]/
 // [Publisher.Handle] to dedup repeat registrations against the SAME
@@ -3071,11 +3109,17 @@ func (c *Client) Attach(t Transport) error {
 // an OPTIONAL, PER-CALL [ClientPublishOptions] override (Phase 4e); at
 // most the first value is used — pass zero or one.
 //
+// pub may be either a bare [Publisher][T] (from [Channel.WithPublish]) or
+// an already-built *[ChannelHandle][T] (from [Publisher.Handle]) — both
+// satisfy [publishArg][T], so T is inferred from msg with no explicit type
+// argument needed at the call site, mirroring today's `any`-typed call
+// shape exactly (Go 1.27 generic methods).
+//
 //	client := events.NewClient(events.WithInfo(events.Info{...}))
 //	client.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock}))
 //	pub := ReadingsChannel.WithPublish(events.Publish{...})
 //	err := client.Publish(ctx, pub, reading)
-func (c *Client) Publish(ctx context.Context, pub any, msg any, opts ...ClientPublishOptions) error {
+func (c *Client) Publish[T any](ctx context.Context, pub publishArg[T], msg T, opts ...ClientPublishOptions) error {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
@@ -3094,11 +3138,17 @@ func (c *Client) Publish(ctx context.Context, pub any, msg any, opts ...ClientPu
 // PER-CALL [ClientSubscribeOptions] override (Phase 4e); at most the
 // first value is used — pass zero or one.
 //
+// sub may be either a bare [Subscriber][T] (from [Channel.WithSubscribe])
+// or an already-built *[ChannelHandle][T] (from [Subscriber.Handle]) —
+// both satisfy [subscribeArg][T], so T is inferred from fn with no
+// explicit type argument needed at the call site, mirroring today's
+// `any`-typed call shape exactly (Go 1.27 generic methods).
+//
 //	client := events.NewClient(events.WithInfo(events.Info{...}))
 //	client.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock}))
 //	sub := ReadingsChannel.WithSubscribe(events.Subscribe{...})
 //	err := client.Subscribe(ctx, sub, func(ctx context.Context, r SensorReading) error { ... })
-func (c *Client) Subscribe(ctx context.Context, sub any, fn any, opts ...ClientSubscribeOptions) error {
+func (c *Client) Subscribe[T any](ctx context.Context, sub subscribeArg[T], fn func(context.Context, T) error, opts ...ClientSubscribeOptions) error {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()

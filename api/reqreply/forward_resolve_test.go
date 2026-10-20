@@ -133,13 +133,9 @@ func TestClient_Call_FollowsSingleForward_DecodesTargetResponse(t *testing.T) {
 		t.Fatalf("RegisterRoute(target): %v", err)
 	}
 
-	respAny, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2})
+	resp, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2})
 	if err != nil {
 		t.Fatalf("Call: want the forward followed and resolved, got error: %v", err)
-	}
-	resp, ok := respAny.(computeResp)
-	if !ok {
-		t.Fatalf("Call resp type = %T, want computeResp", respAny)
 	}
 	if resp.Sum != 42 {
 		t.Errorf("resp.Sum = %d, want 42", resp.Sum)
@@ -204,13 +200,9 @@ func TestClient_Call_FollowsChainedForward_TwoHops(t *testing.T) {
 		t.Fatalf("RegisterRoute(final target): %v", err)
 	}
 
-	respAny, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2})
+	resp, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2})
 	if err != nil {
 		t.Fatalf("Call: want the 2-hop chain followed and resolved, got error: %v", err)
-	}
-	resp, ok := respAny.(computeResp)
-	if !ok {
-		t.Fatalf("Call resp type = %T, want computeResp", respAny)
 	}
 	if resp.Sum != 99 {
 		t.Errorf("resp.Sum = %d, want 99", resp.Sum)
@@ -366,11 +358,11 @@ func TestClient_Call_ForwardSecuritySchemeMatch_Proceeds(t *testing.T) {
 		t.Fatalf("RegisterRoute: %v", err)
 	}
 
-	respAny, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2})
+	resp, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2})
 	if err != nil {
 		t.Fatalf("Call: want same-scheme forward to proceed, got error: %v", err)
 	}
-	if resp, _ := respAny.(computeResp); resp.Sum != 7 {
+	if resp.Sum != 7 {
 		t.Errorf("resp = %+v, want Sum=7", resp)
 	}
 }
@@ -390,11 +382,11 @@ func TestClient_Call_ForwardTargetRequiresNoSecurity_AlwaysProceeds(t *testing.T
 		t.Fatalf("RegisterRoute: %v", err)
 	}
 
-	respAny, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2})
+	resp, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2})
 	if err != nil {
 		t.Fatalf("Call: want a no-security target to always proceed, got error: %v", err)
 	}
-	if resp, _ := respAny.(computeResp); resp.Sum != 3 {
+	if resp.Sum != 3 {
 		t.Errorf("resp = %+v, want Sum=3", resp)
 	}
 }
@@ -481,11 +473,10 @@ func TestClient_CallAsync_FollowsForward(t *testing.T) {
 		t.Fatalf("RegisterRoute: %v", err)
 	}
 
-	futureAny, err := c.CallAsync(context.Background(), forwardOriginatingRoute.ClientHandle(), computeReq{X: 1, Y: 2})
+	future, err := c.CallAsync(context.Background(), forwardOriginatingRoute.ClientHandle(), computeReq{X: 1, Y: 2})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
 	}
-	future := futureAny.(*reqreply.Future[computeResp])
 	resp, waitErr := future.Wait(context.Background())
 	if waitErr != nil {
 		t.Fatalf("future.Wait: want the forward followed and resolved via CallAsync too, got error: %v", waitErr)

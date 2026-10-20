@@ -1229,6 +1229,31 @@ func (r Route[Req, Resp]) ClientHandle(opts ...ClientHandleOpt) *RouteHandle[Req
 	return h
 }
 
+// callRouteArg is an additive, phantom marker interface satisfied by both
+// [Route][Req,Resp] (a bare, unregistered route) and *[RouteHandle]
+// [Req,Resp] (an already-registered handle) — the two shapes
+// [Client.Call]/[Client.CallAsync] dual-accept at runtime, resolved today
+// via [recoverRegistryEntry]'s pure reflection (pkgPath + type-name-prefix
+// matching, unchanged by this interface). Its only purpose is giving
+// Client.Call/CallAsync's generic-method type-parameter inference a
+// concrete argument type to unify Req/Resp against — isReqreplyRoute's
+// body is intentionally empty (a no-op); only the method's SIGNATURE,
+// which mentions both Req and Resp, matters for inference (Go 1.27
+// generic methods — see go127-generic-methods roadmap). Mirrors
+// [api/rest]'s identically-shaped callRouteArg.
+type callRouteArg[Req, Resp any] interface {
+	isReqreplyRoute(Req, Resp)
+}
+
+// isReqreplyRoute implements [callRouteArg], letting a bare
+// [Route][Req,Resp] be passed directly to [Client.Call]/[Client.CallAsync].
+func (Route[Req, Resp]) isReqreplyRoute(Req, Resp) {}
+
+// isReqreplyRoute implements [callRouteArg], letting an already-registered
+// *[RouteHandle][Req,Resp] be passed directly to [Client.Call]/
+// [Client.CallAsync].
+func (*RouteHandle[Req, Resp]) isReqreplyRoute(Req, Resp) {}
+
 // Register registers the route with b and returns a [RouteHandle].
 //
 // Returns [DuplicateRouteError] if a route with the same topic has already been

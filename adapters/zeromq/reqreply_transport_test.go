@@ -192,13 +192,9 @@ func TestAttachServer_AttachClient_RoundTrip(t *testing.T) {
 
 	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer callCancel()
-	respAny, err := client.Call(callCtx, route, computeReq{X: 3, Y: 4})
+	resp, err := client.Call(callCtx, route, computeReq{X: 3, Y: 4})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
-	}
-	resp, ok := respAny.(computeResp)
-	if !ok {
-		t.Fatalf("expected computeResp, got %T", respAny)
 	}
 	if resp.Sum != 7 {
 		t.Fatalf("expected Sum=7, got %d", resp.Sum)
@@ -397,13 +393,9 @@ func TestAttachClient_CallAsync_RoundTrip(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	futureAny, err := client.CallAsync(context.Background(), handle, computeReq{X: 10, Y: 20})
+	future, err := client.CallAsync(context.Background(), handle, computeReq{X: 10, Y: 20})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
-	}
-	future, ok := futureAny.(*reqreply.Future[computeResp])
-	if !ok {
-		t.Fatalf("expected *reqreply.Future[computeResp], got %T", futureAny)
 	}
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -444,13 +436,9 @@ func TestAttachRouterServer_AttachDealerClient_RoundTrip(t *testing.T) {
 	)
 	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer callCancel()
-	respAny, err := client.Call(callCtx, route, computeReq{X: 5, Y: 6})
+	resp, err := client.Call(callCtx, route, computeReq{X: 5, Y: 6})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
-	}
-	resp, ok := respAny.(computeResp)
-	if !ok {
-		t.Fatalf("expected computeResp, got %T", respAny)
 	}
 	if resp.Sum != 11 {
 		t.Fatalf("expected Sum=11, got %d", resp.Sum)
@@ -756,13 +744,12 @@ func TestAttachRouterServer_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	// Accept: token present.
 	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer callCancel()
-	respAny, err := client.Call(callCtx, newSecuredComputeRoute(), securedComputeReq{X: 1, Y: 2, Token: "abc"})
+	resp, err := client.Call(callCtx, newSecuredComputeRoute(), securedComputeReq{X: 1, Y: 2, Token: "abc"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	resp, ok := respAny.(securedComputeResp)
-	if !ok || resp.Sum != 3 {
-		t.Fatalf("expected securedComputeResp{Sum:3}, got %#v", respAny)
+	if resp.Sum != 3 {
+		t.Fatalf("expected securedComputeResp{Sum:3}, got %#v", resp)
 	}
 }
 
@@ -973,13 +960,9 @@ func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
 		reqreply.RouteMeta{OperationID: "compute"},
 	).ClientMW(nil, dec)
 
-	futureAny, err := client.CallAsync(context.Background(), callRoute, computeReq{X: 4, Y: 5})
+	future, err := client.CallAsync(context.Background(), callRoute, computeReq{X: 4, Y: 5})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
-	}
-	future, ok := futureAny.(*reqreply.Future[computeResp])
-	if !ok {
-		t.Fatalf("expected *reqreply.Future[computeResp], got %T", futureAny)
 	}
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer waitCancel()

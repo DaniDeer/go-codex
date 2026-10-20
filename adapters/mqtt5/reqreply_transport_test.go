@@ -3,7 +3,6 @@ package mqtt5
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -57,13 +56,9 @@ func TestAttachServer_AttachClient_RoundTrip(t *testing.T) {
 	wireBrokers(t, serverClient, clientRouter)
 	wireBrokers(t, clientClient, serverRouter)
 
-	respAny, err := client.Call(context.Background(), computeRoute, computeReq{X: 3, Y: 4})
+	resp, err := client.Call(context.Background(), computeRoute, computeReq{X: 3, Y: 4})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
-	}
-	resp, ok := respAny.(computeResp)
-	if !ok {
-		t.Fatalf("resp type = %T, want computeResp", respAny)
 	}
 	if resp.Sum != 7 {
 		t.Fatalf("resp.Sum = %d, want 7", resp.Sum)
@@ -184,11 +179,10 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 	wireBrokers(t, clientClient2, serverRouter)
 	wireBrokers(t, serverClient, clientRouter2)
 
-	respAny, err := client2.Call(context.Background(), clientRoute, computeReq{X: 2, Y: 3})
+	resp, err := client2.Call(context.Background(), clientRoute, computeReq{X: 2, Y: 3})
 	if err != nil {
 		t.Fatalf("Call with registered handle + credential: %v", err)
 	}
-	resp := respAny.(computeResp)
 	if resp.Sum != 5 {
 		t.Fatalf("resp.Sum = %d, want 5", resp.Sum)
 	}
@@ -228,16 +222,12 @@ func TestAttachClient_CallAsync_RoundTrip(t *testing.T) {
 	wireBrokers(t, clientClient, serverRouter)
 
 	start := time.Now()
-	futureAny, err := client.CallAsync(context.Background(), asyncRoute, computeReq{X: 10, Y: 20})
+	future, err := client.CallAsync(context.Background(), asyncRoute, computeReq{X: 10, Y: 20})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
 	}
 	if time.Since(start) > 5*time.Millisecond {
 		t.Fatalf("CallAsync blocked for %v, want near-instant return", time.Since(start))
-	}
-	future, ok := futureAny.(*reqreply.Future[computeResp])
-	if !ok {
-		t.Fatalf("future type = %T, want *reqreply.Future[computeResp]", futureAny)
 	}
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -312,14 +302,9 @@ func TestAttachServer_AttachClient_MergeFields_RoundTrip(t *testing.T) {
 	}
 	resultCh := make(chan result, 1)
 	go func() {
-		respAny, callErr := client.Call(context.Background(), handle, tenantReq{TenantID: "acme", X: 3, Y: 4})
+		resp, callErr := client.Call(context.Background(), handle, tenantReq{TenantID: "acme", X: 3, Y: 4})
 		if callErr != nil {
 			resultCh <- result{err: callErr}
-			return
-		}
-		resp, ok := respAny.(tenantResp)
-		if !ok {
-			resultCh <- result{err: fmt.Errorf("resp type = %T, want tenantResp", respAny)}
 			return
 		}
 		resultCh <- result{resp: resp}
@@ -678,16 +663,12 @@ func TestAttachClient_Call_ClientCallOptions_ResponseFormats_Overrides(t *testin
 	// Client's OWN route declares no Formats (defaults to JSON) — without
 	// the per-call override, decoding the server's YAML reply would fail.
 	clientRoute := reqreply.NewRoute[computeReq, computeResp]("compute/add-yaml-override", computeReqCodec, computeRespCodec)
-	respAny, err := client.Call(context.Background(), clientRoute, computeReq{X: 3, Y: 4},
+	resp, err := client.Call(context.Background(), clientRoute, computeReq{X: 3, Y: 4},
 		reqreply.ClientCallOptions{
 			ResponseFormats: []format.Format[computeResp]{format.YAML(computeRespCodec)},
 		})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
-	}
-	resp, ok := respAny.(computeResp)
-	if !ok {
-		t.Fatalf("resp type = %T, want computeResp", respAny)
 	}
 	if resp.Sum != 7 {
 		t.Fatalf("resp.Sum = %d, want 7 (decoded via ResponseFormats override)", resp.Sum)
@@ -731,16 +712,12 @@ func TestAttachClient_CallAsync_AppliesClientCallOptions(t *testing.T) {
 	wireBrokers(t, clientClient, serverRouter)
 
 	asyncClientRoute := reqreply.NewRoute[computeReq, computeResp]("compute/add-yaml-async", computeReqCodec, computeRespCodec)
-	futureAny, err := client.CallAsync(context.Background(), asyncClientRoute, computeReq{X: 5, Y: 6},
+	future, err := client.CallAsync(context.Background(), asyncClientRoute, computeReq{X: 5, Y: 6},
 		reqreply.ClientCallOptions{
 			ResponseFormats: []format.Format[computeResp]{format.YAML(computeRespCodec)},
 		})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
-	}
-	future, ok := futureAny.(*reqreply.Future[computeResp])
-	if !ok {
-		t.Fatalf("future type = %T, want *reqreply.Future[computeResp]", futureAny)
 	}
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer waitCancel()
@@ -945,11 +922,10 @@ func TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn(t *testi
 	}
 	clientRoute := baseRoute.ClientMW(nil, outerMw).ClientMW(nil, innerMw)
 
-	respAny, err := client.Call(context.Background(), clientRoute, computeReq{X: 5, Y: 6})
+	resp, err := client.Call(context.Background(), clientRoute, computeReq{X: 5, Y: 6})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	resp := respAny.(computeResp)
 	if resp.Sum != 11 {
 		t.Fatalf("resp.Sum = %d, want 11", resp.Sum)
 	}
@@ -1007,13 +983,9 @@ func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
 	}
 	clientRoute := baseRoute.ClientMW(nil, generalMw)
 
-	futureAny, err := client.CallAsync(context.Background(), clientRoute, computeReq{X: 1, Y: 2})
+	future, err := client.CallAsync(context.Background(), clientRoute, computeReq{X: 1, Y: 2})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
-	}
-	future, ok := futureAny.(*reqreply.Future[computeResp])
-	if !ok {
-		t.Fatalf("future type = %T, want *reqreply.Future[computeResp]", futureAny)
 	}
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer waitCancel()
@@ -1884,13 +1856,9 @@ func TestReqReplyServeSpec_RealTransport_PublishesRawSpecBytes(t *testing.T) {
 	wireBrokers(t, serverClient, clientRouter)
 	wireBrokers(t, clientClient, serverRouter)
 
-	respAny, callErr := client.Call(context.Background(), specHandle, reqreply.SpecReq{Format: "json"})
+	body, callErr := client.Call(context.Background(), specHandle, reqreply.SpecReq{Format: "json"})
 	if callErr != nil {
 		t.Fatalf("Call: %v", callErr)
-	}
-	body, ok := respAny.([]byte)
-	if !ok {
-		t.Fatalf("resp type = %T, want []byte", respAny)
 	}
 	if !strings.HasPrefix(string(body), "{") {
 		t.Errorf("want raw JSON spec document (starting with '{'), got: %s", string(body))

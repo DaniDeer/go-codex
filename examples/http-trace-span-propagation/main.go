@@ -238,12 +238,11 @@ func main() {
 	clientCtx = stats.WithObserver(clientCtx, obs)
 	defer tracer.EndSpan(clientCtx, nil)
 
-	respAny, err := client.Call(clientCtx, route, GreetIn{Name: "Alice"})
+	resp, err := client.Call(clientCtx, route, GreetIn{Name: "Alice"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Call failed: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(GreetOut)
 
 	fmt.Printf("Response: %+v\n\n", resp)
 	tracer.Print()

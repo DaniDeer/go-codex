@@ -400,20 +400,24 @@ func (c *Client) Attach(t ClientTransport) error {
 // the adapter — see [Client.followForward]'s doc comment for the full
 // resolution mechanism (registry lookup, security-scheme check,
 // [ClientCallOptions.MaxForwards] capping, decode).
-func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
+func (c *Client) Call[Req, Resp any](ctx context.Context, route callRouteArg[Req, Resp], req Req, opts ...ClientCallOptions) (Resp, error) {
 	c.registerAutoFromCall(route)
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
 	if t == nil {
-		return nil, NoClientTransportAttachedError{}
+		var zero Resp
+		return zero, NoClientTransportAttachedError{}
 	}
-	resp, err := t.Call(ctx, route, req, opts...)
+	respAny, err := t.Call(ctx, route, req, opts...)
 	var fwd ForwardError
 	if !errors.As(err, &fwd) {
+		resp, _ := respAny.(Resp)
 		return resp, err
 	}
-	return c.followForward(ctx, t, route, fwd, opts...)
+	fwdRespAny, fwdErr := c.followForward(ctx, t, route, fwd, opts...)
+	resp, _ := fwdRespAny.(Resp)
+	return resp, fwdErr
 }
 
 // CallAsync is the non-blocking counterpart to [Client.Call] — returns a
@@ -456,7 +460,7 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 //	future, err := client.CallAsync(ctx, ComputeRoute, ComputeReq{X: 1, Y: 2})
 //	// ... do other independent work here ...
 //	resp, err := future.(*reqreply.Future[ComputeResp]).Wait(ctx)
-func (c *Client) CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
+func (c *Client) CallAsync[Req, Resp any](ctx context.Context, route callRouteArg[Req, Resp], req Req, opts ...ClientCallOptions) (*Future[Resp], error) {
 	c.registerAutoFromCall(route)
 	c.mu.RLock()
 	t := c.transport
@@ -472,7 +476,11 @@ func (c *Client) CallAsync(ctx context.Context, route any, req any, opts ...Clie
 	if !ok {
 		return nil, TransportTypeMismatchError{Want: "reqreply.FutureFactory", Got: fmt.Sprintf("%T", route)}
 	}
-	future, resolve := ff.NewFutureAny()
+	futureAny, resolve := ff.NewFutureAny()
+	future, ok := futureAny.(*Future[Resp])
+	if !ok {
+		return nil, TransportTypeMismatchError{Want: fmt.Sprintf("*reqreply.Future[%T]", *new(Resp)), Got: fmt.Sprintf("%T", futureAny)}
+	}
 	go func() {
 		resp, err := c.Call(ctx, route, req, opts...)
 		resolve(resp, err)

@@ -41,12 +41,11 @@ func demoServeSpecCall(ctx context.Context, mqtt5Client *reqreply.Client, specHa
 	fmt.Println("\n── Demo 7b: ServeSpec — fetching the spec via a real Call ──")
 
 	for _, format := range []string{"yaml", "json"} {
-		respAny, err := mqtt5Client.Call(ctx, specHandle, reqreply.SpecReq{Format: format})
+		body, err := mqtt5Client.Call(ctx, specHandle, reqreply.SpecReq{Format: format})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Call(%s) error: %v\n", format, err)
 			os.Exit(1)
 		}
-		body := respAny.([]byte)
 		snippet := strings.TrimSpace(string(body))
 		if len(snippet) > 60 {
 			snippet = snippet[:60] + "..."

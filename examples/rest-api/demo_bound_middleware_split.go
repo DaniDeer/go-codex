@@ -28,20 +28,20 @@ func demoBoundMiddlewareSplit(chiClient *rest.Client) {
 	ctx := context.Background()
 
 	fmt.Println("=== GET /demo-reusable-alone — reusable class ALONE (no security) ===")
-	respAny, err := chiClient.Call(ctx, restapiclient.ReusableAloneRoute, routes.StackedDemoReq{Value: 21})
+	resp, err := chiClient.Call(ctx, restapiclient.ReusableAloneRoute, routes.StackedDemoReq{Value: 21})
 	if err != nil {
 		fmt.Printf("  error: %v\n", err)
 	} else {
-		fmt.Printf("  result: %+v\n", respAny.(routes.StackedDemoResp))
+		fmt.Printf("  result: %+v\n", resp)
 	}
 	fmt.Println()
 
 	fmt.Println("=== POST /stacked-demo — reusable + bound STACKED on one route (Alice, profile scope) ===")
-	respAny, err = chiClient.Call(ctx, restapiclient.StackedDemoRouteAsAlice, routes.StackedDemoReq{Value: 10})
+	resp, err = chiClient.Call(ctx, restapiclient.StackedDemoRouteAsAlice, routes.StackedDemoReq{Value: 10})
 	if err != nil {
 		fmt.Printf("  error: %v\n", err)
 	} else {
-		fmt.Printf("  result: %+v\n", respAny.(routes.StackedDemoResp))
+		fmt.Printf("  result: %+v\n", resp)
 	}
 	fmt.Println()
 }

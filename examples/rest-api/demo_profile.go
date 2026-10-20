@@ -24,14 +24,14 @@ func demoProfile(chiClient *rest.Client) {
 	ctx := context.Background()
 
 	fmt.Println("=== GET /profile — profile scope, valid cookie+header (auto-derived) ===")
-	respAny, err := chiClient.Call(ctx, restapiclient.ProfileRouteAsAlice, routes.ProfileReq{
+	resp, err := chiClient.Call(ctx, restapiclient.ProfileRouteAsAlice, routes.ProfileReq{
 		SessionToken: "my-valid-session-token",
 		RequestID:    "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 	})
 	if err != nil {
 		fmt.Printf("  error: %v\n", err)
 	} else {
-		fmt.Printf("  user: %+v\n", respAny.(routes.User))
+		fmt.Printf("  user: %+v\n", resp)
 	}
 	fmt.Println()
 

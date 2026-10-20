@@ -53,21 +53,19 @@ func demoObserverMiddleware(ctx context.Context, obs *observer.DemoObserver, mqt
 	observedHandle := routes.ComputeRoute.
 		ClientMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
 		ClientHandle(reqreply.WithRouter(computeRouter))
-	respAny, err := mqtt5Client.Call(ctx, observedHandle, routes.ComputeReq{X: 3, Y: 4})
+	resp, err := mqtt5Client.Call(ctx, observedHandle, routes.ComputeReq{X: 3, Y: 4})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.ComputeResp)
 	fmt.Printf("  ✓ compute(3 + 4) = %d (mqtt5, logged via shared Observer)\n", resp.Sum)
 
 	fmt.Println("\n  → the SAME reqreply.Observability[Req,Resp] implementation, via zeromq:")
-	respAny, err = zeromqClient.Call(ctx, observedHandle, routes.ComputeReq{X: 5, Y: 6})
+	resp, err = zeromqClient.Call(ctx, observedHandle, routes.ComputeReq{X: 5, Y: 6})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	resp = respAny.(routes.ComputeResp)
 	fmt.Printf("  ✓ compute(5 + 6) = %d (zeromq, same decorator reused unchanged)\n", resp.Sum)
 
 	fmt.Println("\n  → SecuredComputeRoute: security ClientMW + observer ClientMW composed together:")
@@ -80,12 +78,11 @@ func demoObserverMiddleware(ctx context.Context, obs *observer.DemoObserver, mqt
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}
-	respAny, err = securedClient.Call(ctx, securedObservedHandle, routes.ComputeReq{X: 9, Y: 10})
+	resp, err = securedClient.Call(ctx, securedObservedHandle, routes.ComputeReq{X: 9, Y: 10})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	resp = respAny.(routes.ComputeResp)
 	fmt.Printf("  ✓ compute(9 + 10) = %d (credential + observer middleware both ran, in attachment order)\n", resp.Sum)
 
 	requests, rejected := obs.Summary()

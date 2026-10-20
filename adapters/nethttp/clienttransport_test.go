@@ -40,13 +40,9 @@ func TestAttach_ClientCall_RoundTrip(t *testing.T) {
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	respAny, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
+	resp, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
-	}
-	resp, ok := respAny.(userResp)
-	if !ok {
-		t.Fatalf("Call returned %T, want userResp", respAny)
 	}
 	if resp.Name != "Alice" || resp.ID != "1" {
 		t.Errorf("unexpected response: %+v", resp)
@@ -77,27 +73,35 @@ func TestClientCall_NoTransportAttached_ReturnsNoClientTransportAttachedError(t 
 	}
 }
 
-func TestAttach_ClientCall_WrongRouteType_ReturnsTransportTypeMismatchError(t *testing.T) {
-	client := rest.NewClient()
-	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://example.com"})); err != nil {
-		t.Fatalf("Attach: %v", err)
-	}
-	_, err := client.Call(context.Background(), "not-a-route", createReq{})
+// TestClientTransport_Call_WrongRouteType_ReturnsTransportTypeMismatchError
+// calls [NewClientTransport]'s [rest.ClientTransport] interface directly
+// rather than going through [rest.Client.Call] — since Go 1.27's
+// generic-method retrofit (go127-generic-methods), Client.Call's route
+// param is statically typed (callRouteArg[Req,Resp]), so passing a
+// wrong-shaped route to Client.Call itself is now a COMPILE error, not a
+// runtime [rest.TransportTypeMismatchError] — that mismatch can only
+// still occur at the one layer that remains genuinely `any`-typed: the
+// [rest.ClientTransport] implementation itself, exercised here directly.
+func TestClientTransport_Call_WrongRouteType_ReturnsTransportTypeMismatchError(t *testing.T) {
+	ct := NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://example.com"})
+	_, err := ct.Call(context.Background(), "not-a-route", createReq{})
 	var mismatchErr rest.TransportTypeMismatchError
 	if !errors.As(err, &mismatchErr) {
 		t.Fatalf("want TransportTypeMismatchError, got %v (%T)", err, err)
 	}
 }
 
-func TestAttach_ClientCall_WrongReqType_ReturnsTransportTypeMismatchError(t *testing.T) {
+// TestClientTransport_Call_WrongReqType_ReturnsTransportTypeMismatchError
+// calls [NewClientTransport]'s [rest.ClientTransport] interface directly
+// — see TestClientTransport_Call_WrongRouteType_ReturnsTransportTypeMismatchError's
+// doc comment for why Client.Call itself can no longer exercise this path
+// (req is now statically typed Req).
+func TestClientTransport_Call_WrongReqType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
 	)
-	client := rest.NewClient()
-	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://example.com"})); err != nil {
-		t.Fatalf("Attach: %v", err)
-	}
-	_, err := client.Call(context.Background(), route, "wrong-type")
+	ct := NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://example.com"})
+	_, err := ct.Call(context.Background(), route, "wrong-type")
 	var mismatchErr rest.TransportTypeMismatchError
 	if !errors.As(err, &mismatchErr) {
 		t.Fatalf("want TransportTypeMismatchError, got %v (%T)", err, err)
@@ -331,13 +335,9 @@ func TestAttach_ClientCall_HonorsDeclaredYAMLFormat(t *testing.T) {
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	respAny, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
+	resp, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
-	}
-	resp, ok := respAny.(userResp)
-	if !ok {
-		t.Fatalf("Call returned %T, want userResp", respAny)
 	}
 	if resp.Name != "Alice" || resp.ID != "1" {
 		t.Errorf("unexpected response: %+v", resp)
@@ -371,11 +371,10 @@ func TestAttach_ClientCall_DerivesPathVars(t *testing.T) {
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	respAny, err := client.Call(context.Background(), route, getByIDReq{ID: "42"})
+	resp, err := client.Call(context.Background(), route, getByIDReq{ID: "42"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	resp := respAny.(userResp)
 	if resp.ID != "42" {
 		t.Errorf("want ID=42 (derived path var), got %+v", resp)
 	}
@@ -426,15 +425,15 @@ func TestAttach_ClientCall_CredentialClientMW_Invoked(t *testing.T) {
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	respAny, err := client.Call(context.Background(), clientRoute, getReq{})
+	resp, err := client.Call(context.Background(), clientRoute, getReq{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
 	if !credCalled {
 		t.Error("credential ClientMW was not invoked")
 	}
-	if respAny.(userResp).ID != "me" {
-		t.Errorf("unexpected response: %+v", respAny)
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
 	}
 }
 
@@ -497,15 +496,15 @@ func TestCall_GlobalSecurityOnly_RouteHandle_CredentialInvoked(t *testing.T) {
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	respAny, err := client.Call(context.Background(), handle, getReq{})
+	resp, err := client.Call(context.Background(), handle, getReq{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
 	if !credCalled {
 		t.Error("credential ClientMW was not invoked — GlobalSecurity fallback did not fire for a *RouteHandle")
 	}
-	if respAny.(userResp).ID != "me" {
-		t.Errorf("unexpected response: %+v", respAny)
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
 	}
 }
 
@@ -544,15 +543,15 @@ func TestCall_GlobalSecurityOnly_RawRoute_CredentialNotInvoked(t *testing.T) {
 	}
 	// Pass the RAW route, not the handle — GlobalSecurity must stay
 	// invisible, same as always.
-	respAny, err := client.Call(context.Background(), r, getReq{})
+	resp, err := client.Call(context.Background(), r, getReq{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
 	if credCalled {
 		t.Error("credential ClientMW was invoked — expected GlobalSecurity to stay invisible for a raw Route")
 	}
-	if respAny.(userResp).ID != "me" {
-		t.Errorf("unexpected response: %+v", respAny)
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
 	}
 }
 
@@ -582,15 +581,15 @@ func TestAttach_ClientCall_GeneralPurposeClientMW_Wraps(t *testing.T) {
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	respAny, err := client.Call(context.Background(), r, getReq{})
+	resp, err := client.Call(context.Background(), r, getReq{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
 	if !wrapperRan {
 		t.Error("general-purpose ClientMW Fn did not run")
 	}
-	if respAny.(userResp).ID != "me" {
-		t.Errorf("unexpected response: %+v", respAny)
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
 	}
 }
 
@@ -634,12 +633,12 @@ func TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut(t *testing
 		t.Fatalf("Attach: %v", err)
 	}
 	ctx := WithClientMiddlewareOut(context.Background())
-	respAny, err := client.Call(ctx, route, getReq{})
+	resp, err := client.Call(ctx, route, getReq{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if respAny.(userResp).ID != "me" {
-		t.Errorf("unexpected response: %+v", respAny)
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
 	}
 	if gotHeader != "secret-abc" {
 		t.Errorf("want X-Api-Key %q sent, got %q", "secret-abc", gotHeader)
@@ -683,14 +682,13 @@ func TestAttach_ClientCall_WithClientRequestResponseFormats_Overrides(t *testing
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	respAny, err := client.Call(context.Background(), route, createReq{Name: "Alice"}, rest.ClientCallOptions{
+	resp, err := client.Call(context.Background(), route, createReq{Name: "Alice"}, rest.ClientCallOptions{
 		RequestFormats:  []format.Format[createReq]{format.YAML(createReqCodec)},
 		ResponseFormats: []format.Format[userResp]{format.YAML(userRespCodec)},
 	})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	resp := respAny.(userResp)
 	if resp.Name != "Alice" {
 		t.Errorf("unexpected response: %+v", resp)
 	}
@@ -719,12 +717,12 @@ func TestAttach_ClientCall_BackwardCompatible_NoOptsStillWorks(t *testing.T) {
 		t.Fatalf("Attach: %v", err)
 	}
 	// No opts argument at all — locks in the additive, non-breaking contract.
-	respAny, err := client.Call(context.Background(), route, createReq{Name: "Bob"})
+	resp, err := client.Call(context.Background(), route, createReq{Name: "Bob"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if respAny.(userResp).Name != "Bob" {
-		t.Errorf("unexpected response: %+v", respAny)
+	if resp.Name != "Bob" {
+		t.Errorf("unexpected response: %+v", resp)
 	}
 }
 
@@ -862,12 +860,14 @@ func TestAttach_ClientConsume_NoTransportAttached_ReturnsNoClientTransportAttach
 	}
 }
 
-func TestAttach_ClientConsume_WrongRouteType_ReturnsTransportTypeMismatchError(t *testing.T) {
-	client := rest.NewClient()
-	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://localhost"})); err != nil {
-		t.Fatalf("Attach: %v", err)
-	}
-	err := client.Consume(context.Background(), "not-a-route", getReq{}, func(_ context.Context, _ counterSSEEvent) error { return nil })
+// TestClientTransport_Consume_WrongRouteType_ReturnsTransportTypeMismatchError
+// calls [NewClientTransport]'s [rest.ClientTransport] interface directly —
+// see TestClientTransport_Call_WrongRouteType_ReturnsTransportTypeMismatchError's
+// doc comment for why Client.Consume itself can no longer exercise this
+// path (sseRoute is now statically typed sseRouteArg[Req,Event]).
+func TestClientTransport_Consume_WrongRouteType_ReturnsTransportTypeMismatchError(t *testing.T) {
+	ct := NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://localhost"})
+	err := ct.Consume(context.Background(), "not-a-route", getReq{}, func(_ context.Context, _ counterSSEEvent) error { return nil })
 	var mismatchErr rest.TransportTypeMismatchError
 	if !errors.As(err, &mismatchErr) {
 		t.Fatalf("want TransportTypeMismatchError, got %v", err)

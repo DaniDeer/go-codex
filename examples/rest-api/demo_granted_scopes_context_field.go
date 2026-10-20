@@ -26,7 +26,7 @@ func demoGrantedScopesContextField(chiClient *rest.Client) {
 	if err != nil {
 		fmt.Printf("  error: %v\n", err)
 	} else {
-		fmt.Printf("  result: %+v\n", resp.(auth.ComputeGSResp))
+		fmt.Printf("  result: %+v\n", resp)
 	}
 	fmt.Println()
 

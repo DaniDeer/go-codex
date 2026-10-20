@@ -220,10 +220,19 @@ func TestClient_Call_DualMode_RegisteredHandle_GlobalSecurityEnforced(t *testing
 	}
 }
 
-func TestClient_Call_TransportTypeMismatch(t *testing.T) {
-	c := reqreply.NewClient()
-	_ = c.Attach(&fakeClientTransport{})
-	_, err := c.Call(context.Background(), "not-a-route", computeReq{X: 1, Y: 2})
+// TestClientTransport_Call_TransportTypeMismatch calls fakeClientTransport's
+// [reqreply.ClientTransport] implementation directly rather than going
+// through [reqreply.Client.Call] — since Go 1.27's generic-method retrofit
+// (go127-generic-methods), Client.Call's route param is statically typed
+// (callRouteArg[Req,Resp]), so passing a wrong-shaped route to Client.Call
+// itself is now a COMPILE error, not a runtime
+// [reqreply.TransportTypeMismatchError] — that mismatch can only still
+// occur at the one layer that remains genuinely `any`-typed: the
+// [reqreply.ClientTransport] implementation itself, exercised here
+// directly.
+func TestClientTransport_Call_TransportTypeMismatch(t *testing.T) {
+	ct := &fakeClientTransport{}
+	_, err := ct.Call(context.Background(), "not-a-route", computeReq{X: 1, Y: 2})
 	var wantErr reqreply.TransportTypeMismatchError
 	if !errors.As(err, &wantErr) {
 		t.Fatalf("Call() error = %v, want TransportTypeMismatchError", err)
@@ -335,7 +344,7 @@ func TestClient_CallAsync_ReturnsImmediatelyAndResolvesLater(t *testing.T) {
 	handle := ComputeRoute.ClientHandle()
 
 	start := time.Now()
-	futureAny, err := c.CallAsync(context.Background(), handle, computeReq{X: 3, Y: 4})
+	future1, err := c.CallAsync(context.Background(), handle, computeReq{X: 3, Y: 4})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
 	}
@@ -345,13 +354,10 @@ func TestClient_CallAsync_ReturnsImmediatelyAndResolvesLater(t *testing.T) {
 
 	// Do OTHER independent work — a second, independent CallAsync — before
 	// awaiting the first, confirming "send here, resolve elsewhere".
-	future2Any, err := c.CallAsync(context.Background(), handle, computeReq{X: 10, Y: 20})
+	future2, err := c.CallAsync(context.Background(), handle, computeReq{X: 10, Y: 20})
 	if err != nil {
 		t.Fatalf("second CallAsync: %v", err)
 	}
-
-	future1 := futureAny.(*reqreply.Future[computeResp])
-	future2 := future2Any.(*reqreply.Future[computeResp])
 
 	// Await from a call site distinct from the one that issued CallAsync —
 	// via a separate goroutine + channel, mirroring the confirmed prototype.
@@ -387,11 +393,10 @@ func TestFuture_Wait_TimeoutOnCancelledContext(t *testing.T) {
 	_ = c.Attach(&fakeClientTransport{})
 	handle := ComputeRoute.ClientHandle()
 
-	futureAny, err := c.CallAsync(context.Background(), handle, computeReq{X: 1, Y: 1})
+	future, err := c.CallAsync(context.Background(), handle, computeReq{X: 1, Y: 1})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
 	}
-	future := futureAny.(*reqreply.Future[computeResp])
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled — Wait must return a timeout error immediately

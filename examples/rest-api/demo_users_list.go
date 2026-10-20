@@ -27,11 +27,11 @@ func demoListUsers(chiClient, nethttpClient *rest.Client, chiBaseURL, nethttpBas
 		{"net/http", nethttpClient},
 	}
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(context.Background(), restapiclient.ListUsersRouteAsAlice, routes.ListUsersReq{Page: 2, Search: "alice"})
+		resp, err := cl.c.Call(context.Background(), restapiclient.ListUsersRouteAsAlice, routes.ListUsersReq{Page: 2, Search: "alice"})
 		if err != nil {
 			fmt.Printf("  [%s] error: %v\n", cl.label, err)
 		} else {
-			fmt.Printf("  [%s] result: %+v\n", cl.label, respAny.(routes.PagedUsersResp))
+			fmt.Printf("  [%s] result: %+v\n", cl.label, resp)
 		}
 	}
 	fmt.Println()

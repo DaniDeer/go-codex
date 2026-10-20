@@ -6,7 +6,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/auth"
-	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
 // demoGrantedScopesContextField exercises auth.ComputeGSRoute — the
@@ -34,7 +33,7 @@ func demoGrantedScopesContextField(ctx context.Context, zeromqClient *reqreply.C
 	if err != nil {
 		fmt.Printf("  error: %v\n", err)
 	} else {
-		fmt.Printf("  result: %+v\n", resp.(routes.ComputeResp))
+		fmt.Printf("  result: %+v\n", resp)
 	}
 
 	fmt.Println("  → known token, WRONG scope granted (profile, not compute:write):")

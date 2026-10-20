@@ -143,13 +143,9 @@ func TestClientCall_AutoFollowsRedirect_RegisteredViaPriorCall(t *testing.T) {
 		t.Fatalf("warm-up Call(getUser): %v", err)
 	}
 
-	respAny, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Alice"})
+	resp, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Alice"})
 	if err != nil {
 		t.Fatalf("Call(bounceRoute): want transparent auto-follow, got error: %v", err)
-	}
-	resp, ok := respAny.(userResp)
-	if !ok {
-		t.Fatalf("Call(bounceRoute): want userResp (target's type), got %T", respAny)
 	}
 	if resp.ID != "f47ac10b" || resp.Name != "Alice" {
 		t.Errorf("Call(bounceRoute): unexpected decoded response: %+v", resp)
@@ -170,13 +166,12 @@ func TestClientCall_AutoFollowsRedirect_RegisteredOnlyViaRegisterRoute(t *testin
 		t.Fatalf("RegisterRoute(getUser): %v", err)
 	}
 
-	respAny, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Alice"})
+	resp, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Alice"})
 	if err != nil {
 		t.Fatalf("Call(bounceRoute): want transparent auto-follow, got error: %v", err)
 	}
-	resp, ok := respAny.(userResp)
-	if !ok || resp.ID != "f47ac10b" {
-		t.Fatalf("Call(bounceRoute): unexpected result %#v", respAny)
+	if resp.ID != "f47ac10b" {
+		t.Fatalf("Call(bounceRoute): unexpected result %#v", resp)
 	}
 }
 
@@ -257,13 +252,12 @@ func TestClientCall_307_ReplaysOriginalBody(t *testing.T) {
 		t.Fatalf("RegisterRoute: %v", err)
 	}
 
-	respAny, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Bob"})
+	resp, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Bob"})
 	if err != nil {
 		t.Fatalf("Call: want 307 auto-follow, got error: %v", err)
 	}
-	resp, ok := respAny.(userResp)
-	if !ok || resp.Name != "Bob" {
-		t.Fatalf("Call: unexpected result %#v", respAny)
+	if resp.Name != "Bob" {
+		t.Fatalf("Call: unexpected result %#v", resp)
 	}
 	if receivedBody.Name != "Bob" {
 		t.Errorf("307 follow-up: want the ORIGINAL request body (Name=Bob) replayed, got %+v", receivedBody)
@@ -686,13 +680,12 @@ func TestClientCall_AutoFollow_ReusesCodecBackedClientMiddlewareCredential(t *te
 		t.Fatalf("RegisterRoute(getUser): %v", err)
 	}
 
-	respAny, err := client.Call(context.Background(), bounceRouteClient, createReq{Name: "Alice"})
+	resp, err := client.Call(context.Background(), bounceRouteClient, createReq{Name: "Alice"})
 	if err != nil {
 		t.Fatalf("Call(bounceRoute): want transparent auto-follow reusing the codec-backed credential, got error: %v", err)
 	}
-	resp, ok := respAny.(userResp)
-	if !ok || resp.ID != "f47ac10b" {
-		t.Fatalf("Call(bounceRoute): unexpected result %#v", respAny)
+	if resp.ID != "f47ac10b" {
+		t.Fatalf("Call(bounceRoute): unexpected result %#v", resp)
 	}
 }
 

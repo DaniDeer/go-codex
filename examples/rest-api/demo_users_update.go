@@ -25,7 +25,7 @@ func demoUpdateUser(chiClient, nethttpClient *rest.Client) {
 		{"net/http", nethttpClient},
 	}
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(context.Background(), restapiclient.UpdateUserRouteAsAdmin, routes.UpdateUserReq{
+		resp, err := cl.c.Call(context.Background(), restapiclient.UpdateUserRouteAsAdmin, routes.UpdateUserReq{
 			ID:    "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 			Name:  "Alice Updated",
 			Email: "alice.updated@example.com",
@@ -33,7 +33,7 @@ func demoUpdateUser(chiClient, nethttpClient *rest.Client) {
 		if err != nil {
 			fmt.Printf("  [%s] error: %v\n", cl.label, err)
 		} else {
-			fmt.Printf("  [%s] user: %+v\n", cl.label, respAny.(routes.User))
+			fmt.Printf("  [%s] user: %+v\n", cl.label, resp)
 		}
 	}
 	fmt.Println()

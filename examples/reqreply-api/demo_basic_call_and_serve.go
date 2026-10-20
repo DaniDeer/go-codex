@@ -23,11 +23,10 @@ func demoBasicCallAndServe(ctx context.Context, mqtt5Client *reqreply.Client) {
 	fmt.Println("\n── Demo 1: basic call + serve (raw Route, no Server needed client-side) ──")
 
 	req := routes.ComputeReq{X: 3, Y: 4}
-	respAny, err := mqtt5Client.Call(ctx, routes.ComputeRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute"))), req)
+	resp, err := mqtt5Client.Call(ctx, routes.ComputeRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute"))), req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "call error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.ComputeResp)
 	fmt.Printf("  compute(%d + %d) = %d\n", req.X, req.Y, resp.Sum)
 }

@@ -34,11 +34,11 @@ func demoAdminAction(chiClient, nethttpClient *rest.Client) {
 
 	fmt.Println("=== POST /admin/action — admin (expect 200) ===")
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(ctx, restapiclient.AdminActionRouteAsAdmin, routes.AdminActionReq{Action: "reindex"})
+		resp, err := cl.c.Call(ctx, restapiclient.AdminActionRouteAsAdmin, routes.AdminActionReq{Action: "reindex"})
 		if err != nil {
 			fmt.Printf("  [%s] error: %v\n", cl.label, err)
 		} else {
-			fmt.Printf("  [%s] result: %+v\n", cl.label, respAny.(routes.AdminActionResp))
+			fmt.Printf("  [%s] result: %+v\n", cl.label, resp)
 		}
 	}
 	fmt.Println()

@@ -2643,7 +2643,9 @@ func TestClientAttach_SecondCall_ReturnsTransportAlreadyAttachedError(t *testing
 
 func TestClientPublish_NoTransportAttached_ReturnsNoTransportAttachedError(t *testing.T) {
 	c := events.NewClient(events.WithInfo(testInfo))
-	err := c.Publish(context.Background(), nil, nil)
+	// T explicit here: both args are nil, so Go has nothing to infer T
+	// from (Go 1.27 generic method — see go127-generic-methods roadmap).
+	err := c.Publish[any](context.Background(), nil, nil)
 	var noTransportErr events.NoTransportAttachedError
 	if !errors.As(err, &noTransportErr) {
 		t.Fatalf("want NoTransportAttachedError, got %v (%T)", err, err)
@@ -2652,7 +2654,9 @@ func TestClientPublish_NoTransportAttached_ReturnsNoTransportAttachedError(t *te
 
 func TestClientSubscribe_NoTransportAttached_ReturnsNoTransportAttachedError(t *testing.T) {
 	c := events.NewClient(events.WithInfo(testInfo))
-	err := c.Subscribe(context.Background(), nil, nil)
+	// T explicit here: both args are nil, so Go has nothing to infer T
+	// from (Go 1.27 generic method — see go127-generic-methods roadmap).
+	err := c.Subscribe[any](context.Background(), nil, nil)
 	var noTransportErr events.NoTransportAttachedError
 	if !errors.As(err, &noTransportErr) {
 		t.Fatalf("want NoTransportAttachedError, got %v (%T)", err, err)
@@ -2674,7 +2678,8 @@ func TestClientPublish_DelegatesToAttachedTransport(t *testing.T) {
 	if err := c.Attach(mt); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	if err := c.Publish(context.Background(), "pub", "msg"); err != nil {
+	pub := events.NewChannel[string]("delegate/publish", codex.String()).WithPublish(events.Publish{})
+	if err := c.Publish(context.Background(), pub, "msg"); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if !mt.publishCalled {
@@ -2688,7 +2693,8 @@ func TestClientSubscribe_DelegatesToAttachedTransport(t *testing.T) {
 	if err := c.Attach(mt); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	if err := c.Subscribe(context.Background(), "sub", func() {}); err != nil {
+	sub := events.NewChannel[string]("delegate/subscribe", codex.String()).WithSubscribe(events.Subscribe{})
+	if err := c.Subscribe(context.Background(), sub, func(context.Context, string) error { return nil }); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	if !mt.subscribeCalled {

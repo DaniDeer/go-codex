@@ -22,12 +22,12 @@ func demoLogin(chiClient, nethttpClient *rest.Client) {
 		{"net/http", nethttpClient},
 	}
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(context.Background(), restapiclient.LoginRoute, auth.LoginReq{Username: "alice", Password: "secret"})
+		resp, err := cl.c.Call(context.Background(), restapiclient.LoginRoute, auth.LoginReq{Username: "alice", Password: "secret"})
 		if err != nil {
 			fmt.Printf("  [%s] login (alice) error: %v\n", cl.label, err)
 			continue
 		}
-		fmt.Printf("  [%s] login (alice) → token=%q\n", cl.label, respAny.(auth.TokenResp).Token)
+		fmt.Printf("  [%s] login (alice) → token=%q\n", cl.label, resp.Token)
 	}
 	fmt.Println()
 

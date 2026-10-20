@@ -40,12 +40,11 @@ func demoForward(ctx context.Context, mqtt5Client *reqreply.Client) {
 		os.Exit(1)
 	}
 
-	respAny, err := mqtt5Client.Call(ctx, routes.ForwardOriginatingRoute, routes.ComputeReq{X: 1, Y: 2})
+	resp, err := mqtt5Client.Call(ctx, routes.ForwardOriginatingRoute, routes.ComputeReq{X: 1, Y: 2})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Call(ForwardOriginatingRoute) error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.ComputeResp)
 	// ForwardToDouble forwards {X:1*10, Y:2*10} = {X:10, Y:20} to
 	// ForwardTargetRoute (handlers.Double: (X+Y)*2) → (10+20)*2 = 60.
 	fmt.Printf("  ✓ Call(ForwardOriginatingRoute) auto-followed to ForwardTargetRoute, resolved: Sum=%d\n", resp.Sum)
@@ -143,12 +142,11 @@ func demoForwardWithProperties(ctx context.Context) {
 		os.Exit(1)
 	}
 
-	respAny, err := client.Call(ctx, routes.ForwardWithPropertiesSourceRoute, routes.ComputeReq{X: 3, Y: 4})
+	resp, err := client.Call(ctx, routes.ForwardWithPropertiesSourceRoute, routes.ComputeReq{X: 3, Y: 4})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Call(ForwardWithPropertiesSourceRoute) error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.ComputeResp)
 	// ForwardWithPropertiesSourceRoute forwards {X:3,Y:4} to
 	// ForwardTargetRoute (handlers.Double: (X+Y)*2) → (3+4)*2 = 14.
 	fmt.Printf("  ✓ Call auto-followed to ForwardTargetRoute, resolved: Sum=%d\n", resp.Sum)

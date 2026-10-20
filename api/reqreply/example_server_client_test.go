@@ -85,11 +85,11 @@ func Example() {
 
 	client := reqreply.NewClient()
 	_ = client.Attach(transport)
-	respAny, err := client.Call(context.Background(), computeRoute, computeReq{X: 2, Y: 3})
+	resp, err := client.Call(context.Background(), computeRoute, computeReq{X: 2, Y: 3})
 	if err != nil {
 		fmt.Println("call error:", err)
 		return
 	}
-	fmt.Println(respAny.(computeResp).Sum)
+	fmt.Println(resp.Sum)
 	// Output: 5
 }

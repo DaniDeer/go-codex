@@ -34,21 +34,19 @@ func demoCallAsyncFuture(ctx context.Context, mqtt5Client *reqreply.Client) {
 	computeHandle := routes.ComputeRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
 
 	// Issue TWO independent async calls, back to back, before awaiting either.
-	future1Any, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 1, Y: 1})
+	future1, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 1, Y: 1})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CallAsync #1 error: %v\n", err)
 		os.Exit(1)
 	}
-	future1 := future1Any.(*reqreply.Future[routes.ComputeResp])
 
 	fmt.Println("  → CallAsync #1 issued, doing other independent work before awaiting it...")
 
-	future2Any, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 2, Y: 2})
+	future2, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 2, Y: 2})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CallAsync #2 error: %v\n", err)
 		os.Exit(1)
 	}
-	future2 := future2Any.(*reqreply.Future[routes.ComputeResp])
 
 	fmt.Println("  → CallAsync #2 issued too — NEITHER has been awaited yet")
 
@@ -70,12 +68,11 @@ func demoCallAsyncFuture(ctx context.Context, mqtt5Client *reqreply.Client) {
 
 	// Timeout scenario: Future.Wait against an already-cancelled ctx.
 	fmt.Println("\n  → Future.Wait against an already-cancelled ctx:")
-	future3Any, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 3, Y: 3})
+	future3, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 3, Y: 3})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CallAsync #3 error: %v\n", err)
 		os.Exit(1)
 	}
-	future3 := future3Any.(*reqreply.Future[routes.ComputeResp])
 	cancelledCtx, cancelNow := context.WithCancel(context.Background())
 	cancelNow()
 	_, err = future3.Wait(cancelledCtx)

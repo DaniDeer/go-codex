@@ -409,13 +409,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	bobAny, err := restClient.Call(clientCtx, contract.CreateUser,
+	bob, err := restClient.Call(clientCtx, contract.CreateUser,
 		contract.CreateUserReq{Name: "Bob", Email: "bob@example.com"})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create bob via Client.Attach:", err)
 		os.Exit(1)
 	}
-	bob := bobAny.(contract.User)
 	fmt.Printf("created via Client.Attach: %+v\n", bob)
 
 	// Duplicate email — CreateUser's declared rest.ErrorPattern still

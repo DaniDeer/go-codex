@@ -143,7 +143,7 @@ func TestClient_CallAsync_AutoPopulatesRegistry(t *testing.T) {
 	}
 	route := reqreply.NewRoute[computeReq, computeResp]("compute/auto-populate-async", reqCodec, respCodec)
 
-	futureAny, err := c.CallAsync(context.Background(), route, computeReq{})
+	future, err := c.CallAsync(context.Background(), route, computeReq{})
 	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
 	}
@@ -153,7 +153,6 @@ func TestClient_CallAsync_AutoPopulatesRegistry(t *testing.T) {
 	// must await the Future before asserting ft.calls, unlike the
 	// synchronous registry auto-populate step above it (which still runs
 	// BEFORE the goroutine launches).
-	future := futureAny.(*reqreply.Future[computeResp])
 	if _, err := future.Wait(context.Background()); err != nil {
 		t.Fatalf("future.Wait: %v", err)
 	}

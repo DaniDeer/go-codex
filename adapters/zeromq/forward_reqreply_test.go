@@ -324,13 +324,9 @@ func TestClient_Call_FollowsForward_EndToEndViaRealZeroMQAdapter(t *testing.T) {
 		t.Fatalf("RegisterRoute(target): %v", err)
 	}
 
-	respAny, err := client.Call(context.Background(), originatingRoute, computeReq{X: 1, Y: 2})
+	resp, err := client.Call(context.Background(), originatingRoute, computeReq{X: 1, Y: 2})
 	if err != nil {
 		t.Fatalf("Call: want the REAL wire-level forward followed end to end, got error: %v", err)
-	}
-	resp, ok := respAny.(computeResp)
-	if !ok {
-		t.Fatalf("Call resp type = %T, want computeResp", respAny)
 	}
 	// originating forwards {X:10, Y:20} to target: (10+20)*2 = 60.
 	if resp.Sum != 60 {

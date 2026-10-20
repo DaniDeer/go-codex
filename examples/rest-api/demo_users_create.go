@@ -54,35 +54,35 @@ func demoCreateUser(chiClient, nethttpClient *rest.Client, chiBaseURL, nethttpBa
 
 	fmt.Println("=== POST /users — admin, JSON (expect 201) ===")
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Alice", Email: "alice@example.com"})
+		resp, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Alice", Email: "alice@example.com"})
 		if err != nil {
 			fmt.Printf("  [%s] error: %v\n", cl.label, err)
 		} else {
-			fmt.Printf("  [%s] user: %+v\n", cl.label, respAny.(routes.User))
+			fmt.Printf("  [%s] user: %+v\n", cl.label, resp)
 		}
 	}
 	fmt.Println()
 
 	fmt.Println("=== POST /users — admin, YAML response (ClientCallOptions.ResponseFormats) ===")
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Bob", Email: "bob@example.com"},
+		resp, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Bob", Email: "bob@example.com"},
 			rest.ClientCallOptions{ResponseFormats: []format.Format[routes.User]{format.YAML(routes.UserCodec)}})
 		if err != nil {
 			fmt.Printf("  [%s] error: %v\n", cl.label, err)
 		} else {
-			fmt.Printf("  [%s] user (decoded from YAML response): %+v\n", cl.label, respAny.(routes.User))
+			fmt.Printf("  [%s] user (decoded from YAML response): %+v\n", cl.label, resp)
 		}
 	}
 	fmt.Println()
 
 	fmt.Println("=== POST /users — admin, YAML request body (ClientCallOptions.RequestFormats) ===")
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Carol", Email: "carol@example.com"},
+		resp, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Carol", Email: "carol@example.com"},
 			rest.ClientCallOptions{RequestFormats: []format.Format[routes.CreateUserReq]{format.YAML(routes.CreateUserReqCodec)}})
 		if err != nil {
 			fmt.Printf("  [%s] error: %v\n", cl.label, err)
 		} else {
-			fmt.Printf("  [%s] user: %+v\n", cl.label, respAny.(routes.User))
+			fmt.Printf("  [%s] user: %+v\n", cl.label, resp)
 		}
 	}
 	fmt.Println()

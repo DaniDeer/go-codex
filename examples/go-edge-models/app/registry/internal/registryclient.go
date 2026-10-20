@@ -103,11 +103,11 @@ func (rc *RegistryClient) ctxWithObserver(ctx context.Context) context.Context {
 // GetTags lists every tag for repository on rc's registry host.
 func (rc *RegistryClient) GetTags(ctx context.Context, repository string) (regmodels.TagsList, error) {
 	ctx = rc.ctxWithObserver(ctx)
-	respAny, err := rc.client.Call(ctx, rc.tagsRoute, regmodels.GetTagsReq{Name: repository})
+	resp, err := rc.client.Call(ctx, rc.tagsRoute, regmodels.GetTagsReq{Name: repository})
 	if err != nil {
 		return regmodels.TagsList{}, err
 	}
-	return respAny.(regmodels.TagsList), nil
+	return resp, nil
 }
 
 // GetTagsFiltered calls GetTags, then sorts/limits the result's Tags via
@@ -142,11 +142,10 @@ func (rc *RegistryClient) GetImageMetadata(ctx context.Context, repository, refe
 		platformStr = platform
 	}
 
-	respAny, err := rc.client.Call(ctx, rc.manifestRoute, regmodels.GetManifestReq{Name: repository, Reference: reference})
+	env, err := rc.client.Call(ctx, rc.manifestRoute, regmodels.GetManifestReq{Name: repository, Reference: reference})
 	if err != nil {
 		return regmodels.ManifestMetadata{}, err
 	}
-	env := respAny.(util.ManifestEnvelope)
 
 	if env.List != nil {
 		available := make([]string, 0, len(env.List.Manifests))
@@ -166,11 +165,10 @@ func (rc *RegistryClient) GetImageMetadata(ctx context.Context, repository, refe
 			return regmodels.ManifestMetadata{}, PlatformNotFoundError{Platform: platformStr, Available: available}
 		}
 
-		respAny, err = rc.client.Call(ctx, rc.manifestRoute, regmodels.GetManifestReq{Name: repository, Reference: resolvedDigest})
+		env, err = rc.client.Call(ctx, rc.manifestRoute, regmodels.GetManifestReq{Name: repository, Reference: resolvedDigest})
 		if err != nil {
 			return regmodels.ManifestMetadata{}, err
 		}
-		env = respAny.(util.ManifestEnvelope)
 		if env.List != nil {
 			return regmodels.ManifestMetadata{}, NestedManifestListError{
 				Registry: rc.host, Repository: repository, Reference: resolvedDigest,

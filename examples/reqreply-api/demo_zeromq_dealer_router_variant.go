@@ -37,12 +37,11 @@ func demoZeroMQDealerRouterVariant(ctx context.Context, obs stats.Observer) {
 		fmt.Fprintf(os.Stderr, "BuildZeroMQDealer error: %v\n", err)
 		os.Exit(1)
 	}
-	respAny, err := dealerClient.Call(ctx, routes.RouterComputeRoute, routes.ComputeReq{X: 9, Y: 10})
+	resp, err := dealerClient.Call(ctx, routes.RouterComputeRoute, routes.ComputeReq{X: 9, Y: 10})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dealer call error: %v\n", err)
 		os.Exit(1)
 	}
-	resp := respAny.(routes.ComputeResp)
 	fmt.Printf("  ✓ ROUTER/DEALER compute(9 + 10) = %d\n", resp.Sum)
 
 	fmt.Println("\n  → deliberately misconfigured server (MissingSocketRoute registered, no socket wired):")

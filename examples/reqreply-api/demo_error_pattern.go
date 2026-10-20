@@ -138,12 +138,12 @@ func demoErrorPatternClientMatchMechanisms(ctx context.Context, built *mqtt5serv
 	}
 
 	fmt.Println("  → call with a non-negative X (happy path):")
-	respAny, err := client.Call(ctx, routes.ErrorPatternComputeRoute, routes.ComputeReq{X: 3, Y: 4})
+	resp, err := client.Call(ctx, routes.ErrorPatternComputeRoute, routes.ComputeReq{X: 3, Y: 4})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("  ✓ compute(3 + 4) = %d\n", respAny.(routes.ComputeResp).Sum)
+	fmt.Printf("  ✓ compute(3 + 4) = %d\n", resp.Sum)
 
 	fmt.Println("  → call with a negative X (matched ErrorPattern):")
 	_, err = client.Call(ctx, routes.ErrorPatternComputeRoute, routes.ComputeReq{X: -1, Y: 4})
@@ -379,12 +379,12 @@ func demoErrorPatternPortAdapter(ctx context.Context) {
 	}
 
 	fmt.Println("  → call with a non-negative X (happy path, through ports):")
-	respAny, err := client.Call(ctx, routes.ErrorPatternComputeRoute, routes.ComputeReq{X: 5, Y: 6})
+	resp, err := client.Call(ctx, routes.ErrorPatternComputeRoute, routes.ComputeReq{X: 5, Y: 6})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("  ✓ compute(5 + 6) = %d\n", respAny.(routes.ComputeResp).Sum)
+	fmt.Printf("  ✓ compute(5 + 6) = %d\n", resp.Sum)
 
 	fmt.Println("  → call with a negative X (matched ErrorPattern, through ports):")
 	_, err = client.Call(ctx, routes.ErrorPatternComputeRoute, routes.ComputeReq{X: -1, Y: 6})
