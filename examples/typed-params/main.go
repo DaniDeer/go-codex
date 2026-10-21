@@ -27,7 +27,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/rest"

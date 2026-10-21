@@ -83,7 +83,7 @@
 > survey, added a new permanent cross-package exclusion, resolved open
 > question #1 via a real `go1.27.2` compile check, and spun off three
 > separate stubs for other Go 1.27 features
-> ([go127-stdlib-uuid.md](go127-stdlib-uuid.md),
+> (`go127-stdlib-uuid.md` — shipped and removed,
 > [go127-synctest-stream-tests.md](go127-synctest-stream-tests.md),
 > [go127-json-v2-evaluation.md](go127-json-v2-evaluation.md)).
 >
@@ -1017,7 +1017,7 @@ in place**, committed during the `adapters/smb` implementation round
   investigated this round. A follow-up coverage review DID survey this
   toolchain's actual `api/go1.27.txt` and spun off three separate
   Explore-depth stubs rather than folding them into this doc: the new
-  stdlib `uuid` package ([go127-stdlib-uuid.md](go127-stdlib-uuid.md)),
+  stdlib `uuid` package (`go127-stdlib-uuid.md` — shipped and removed),
   `testing/synctest` for `stream` package tests
   ([go127-synctest-stream-tests.md](go127-synctest-stream-tests.md)),
   and a flag-only note on `encoding/json/v2`

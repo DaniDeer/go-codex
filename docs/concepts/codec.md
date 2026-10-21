@@ -1614,7 +1614,7 @@ Two primitives in `codex` build such a `Codec[V]`:
 - **`codex.TextCodec[V]()`** — zero boilerplate for any `V` whose pointer
   already implements `encoding.TextMarshaler`/`encoding.TextUnmarshaler`
   (the standard Go convention for "this type has a canonical string
-  form"), e.g. `uuid.UUID` from `github.com/google/uuid`:
+  form"), e.g. `uuid.UUID` from the stdlib `uuid` package (Go 1.27+):
   `codex.TextCodec[uuid.UUID]()`.
 
 Ready-made convenience codecs built on `StringCodec` for the common stdlib

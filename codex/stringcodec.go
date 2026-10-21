@@ -57,7 +57,7 @@ func StringCodec[V any](parse func(string) (V, error), format func(V) (string, e
 // textValue is the constraint TextCodec requires: *V must implement both
 // encoding.TextMarshaler and encoding.TextUnmarshaler (the standard way a
 // Go type declares "I have a canonical string form"). Satisfied by types
-// like uuid.UUID (github.com/google/uuid) with zero go-codex-specific code.
+// like uuid.UUID (stdlib uuid package, Go 1.27+) with zero go-codex-specific code.
 type textValue[V any] interface {
 	*V
 	encoding.TextMarshaler

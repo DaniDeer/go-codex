@@ -7,7 +7,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // ServeOptions configures a server-side [serverTransport] (built by

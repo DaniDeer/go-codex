@@ -9,7 +9,7 @@
 package routes
 
 import (
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/validate"

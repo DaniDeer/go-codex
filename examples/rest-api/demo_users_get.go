@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	restapiclient "github.com/DaniDeer/go-codex/examples/rest-api/client"

@@ -15,7 +15,7 @@ import (
 	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // reqreplyPkgPath is api/reqreply's import path — used to distinguish a

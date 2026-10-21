@@ -3,7 +3,7 @@ package routes
 import (
 	"net/http"
 
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"

@@ -41,7 +41,7 @@ import (
 	"time"
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/google/uuid"
+	"uuid"
 
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	"github.com/DaniDeer/go-codex/api/events"
