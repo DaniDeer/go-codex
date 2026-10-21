@@ -2743,6 +2743,49 @@ for _, tc := range cases {
 - `Codec` struct function fields directly — test through behavior (`Encode`, `Decode`).
 - `examples/` — run via `go run`, not `go test`.
 
+### Time-Based / Concurrent Tests: `testing/synctest`
+
+Use `testing/synctest.Test(t, func(t *testing.T) { ... })` for any test
+depending on `time.Sleep`/timers/tickers — the bubble's fake clock
+resolves these instantly while preserving real happens-before ordering.
+Prefer this over artificially-tiny real durations paired with a
+wall-clock safety-net `select`/`time.After` guard, which is fast in
+practice but theoretically flaky under a loaded CI runner.
+`stream/time_test.go`'s `Buffer`/`Debounce`/`Throttle`/`Window` tests
+are the reference example (11 tests converted this way).
+
+```go
+func TestDebounce_EmitsLastValueAfterSilence(t *testing.T) {
+    synctest.Test(t, func(t *testing.T) {
+        // stream.Debounce's internal goroutine is spawned synchronously
+        // here, so it's automatically part of the bubble — its
+        // time.After(d) timer resolves on the fake clock, not real time.
+        debounced := stream.Debounce(ctx, src, 20*time.Millisecond)
+        vals, _ := stream.Collect(ctx, debounced)
+        // ... assertions ...
+    })
+}
+```
+
+- The API is `synctest.Test`, not `synctest.Run` — an older,
+  pre-stabilization name from earlier Go versions. Don't copy examples
+  using `synctest.Run`.
+- `synctest.Sleep(d)` and `synctest.Wait()` (blocks until every other
+  bubble goroutine is durably blocked) are also available — `Wait()` is
+  useful for asserting "nothing has happened yet" deterministically.
+- A goroutine is part of the bubble only if spawned (transitively) from
+  the `synctest.Test` closure — code under test must launch its own
+  goroutines synchronously inside the test, not reuse some
+  pre-existing background worker the test can't reach.
+- **Every goroutine in the bubble must have exited by the time the test
+  closure returns.** Unlike an ordinary test (where an orphaned, blocked
+  goroutine is silently garbage-collected), `synctest.Test` panics with
+  `"main bubble goroutine has exited but blocked goroutines remain"` if
+  one is left behind — a test that deliberately never closes its source
+  channels (e.g. to exercise a timeout-only code path) must instead
+  cancel a `context.WithCancel` context before the closure returns, so
+  the code under test observes `ctx.Done()` and exits cleanly.
+
 ## Tooling
 
 This project uses [`just`](https://just.systems/) as the task runner. All common development tasks have a `just` recipe. Run `just` with no arguments to list available recipes.

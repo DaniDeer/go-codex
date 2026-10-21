@@ -84,7 +84,9 @@
 > question #1 via a real `go1.27.2` compile check, and spun off three
 > separate stubs for other Go 1.27 features
 > (`go127-stdlib-uuid.md` — shipped and removed,
-> [go127-synctest-stream-tests.md](go127-synctest-stream-tests.md),
+> `go127-synctest-stream-tests.md` — shipped and removed, its
+> `testing/synctest` findings promoted into
+> `.github/instructions/go-codex.instructions.md`'s Testing section,
 > [go127-json-v2-evaluation.md](go127-json-v2-evaluation.md)).
 >
 > An implementation round then SHIPPED every true Tier 1 candidate as a
@@ -1018,8 +1020,9 @@ in place**, committed during the `adapters/smb` implementation round
   toolchain's actual `api/go1.27.txt` and spun off three separate
   Explore-depth stubs rather than folding them into this doc: the new
   stdlib `uuid` package (`go127-stdlib-uuid.md` — shipped and removed),
-  `testing/synctest` for `stream` package tests
-  ([go127-synctest-stream-tests.md](go127-synctest-stream-tests.md)),
+  `testing/synctest` for `stream` package tests (`go127-synctest-stream-tests.md`
+  — shipped and removed, its findings promoted into
+  `.github/instructions/go-codex.instructions.md`'s Testing section),
   and a flag-only note on `encoding/json/v2`
   ([go127-json-v2-evaluation.md](go127-json-v2-evaluation.md)).
 - A broader "modernize the whole codebase for Go 1.27" sweep — this
